@@ -670,7 +670,7 @@ impl MoonlightStreamProto {
             self.rtsp.target_addr().addr.port(),
             50, // TODO: <--
             self.client_settings.audio_config,
-            false, // <-- TODO
+            true, // high_quality_audio — request best Opus encoding from Sunshine
             1,     // TODO: <--
             1,     // TODO: <--
             self.client_settings.color_space,
