@@ -529,6 +529,48 @@ where
         aes_iv: AesIv,
         launch_url_query_parameters: &str,
     ) -> Result<MoonlightStreamConfig, MoonlightClientError> {
+        self.start_stream_mode(
+            app_id,
+            settings,
+            aes_key,
+            aes_iv,
+            launch_url_query_parameters,
+            true,
+        )
+        .await
+    }
+
+    /// Launches a new app without ever resuming a running app. A busy host must
+    /// reject the launch; callers requiring exclusive ownership must use this
+    /// instead of checking current_game then calling start_stream (which races).
+    pub async fn launch_stream(
+        &self,
+        app_id: u32,
+        settings: &MoonlightStreamSettings,
+        aes_key: AesKey,
+        aes_iv: AesIv,
+        launch_url_query_parameters: &str,
+    ) -> Result<MoonlightStreamConfig, MoonlightClientError> {
+        self.start_stream_mode(
+            app_id,
+            settings,
+            aes_key,
+            aes_iv,
+            launch_url_query_parameters,
+            false,
+        )
+        .await
+    }
+
+    async fn start_stream_mode(
+        &self,
+        app_id: u32,
+        settings: &MoonlightStreamSettings,
+        aes_key: AesKey,
+        aes_iv: AesIv,
+        launch_url_query_parameters: &str,
+        allow_resume: bool,
+    ) -> Result<MoonlightStreamConfig, MoonlightClientError> {
         // Clearing cache so we refresh and can see if there's a game -> launch or resume?
         self.update().await?;
 
@@ -560,21 +602,15 @@ where
         let rtsp_session_url = {
             let client = self.client.lock().await;
 
-            if current_game == 0 {
-                let launch_response = client
-                    .send_https::<LaunchEndpoint>(client_info, &https_address, &request)
-                    .await
-                    .map_err(req_err)?;
-
-                launch_response.rtsp_session_url
-            } else {
-                let resume_response = client
-                    .send_https::<ResumeEndpoint>(client_info, &https_address, &request)
-                    .await
-                    .map_err(req_err)?;
-
-                resume_response.rtsp_session_url
-            }
+            send_stream_request(
+                &*client,
+                client_info,
+                &https_address,
+                &request,
+                current_game,
+                allow_resume,
+            )
+            .await?
         };
 
         let app_version = self.version().await?;
@@ -628,3 +664,35 @@ where
         Ok(response.cancelled)
     }
 }
+
+// Selection and the actual request are kept together so launch-only callers
+// cannot accidentally fall back to resume after a host-state race or refusal.
+async fn send_stream_request<Client: RequestClient>(
+    client: &Client,
+    client_info: ClientInfo<'_>,
+    address: &str,
+    request: &ClientStreamRequest,
+    current_game: u32,
+    allow_resume: bool,
+) -> Result<Option<String>, MoonlightClientError>
+where
+    Client::Error: Error + Send + Sync + 'static,
+{
+    if !allow_resume || current_game == 0 {
+        Ok(client
+            .send_https::<LaunchEndpoint>(client_info, address, request)
+            .await
+            .map_err(req_err)?
+            .rtsp_session_url)
+    } else {
+        Ok(client
+            .send_https::<ResumeEndpoint>(client_info, address, request)
+            .await
+            .map_err(req_err)?
+            .rtsp_session_url)
+    }
+}
+
+#[cfg(test)]
+#[path = "tokio_launch_test.rs"]
+mod launch_tests;

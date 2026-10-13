@@ -1,0 +1,51 @@
+name: Signage launch contract
+on:
+  push:
+    branches: [issue-770-launch-only]
+  pull_request:
+    paths: ['src/high/**', '.github/workflows/signage-launch.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    name: Launch tests and baseline comparison
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ''
+      - uses: Swatinem/rust-cache@v2
+      - name: Install existing example/test native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - name: Verify launch-only and legacy endpoint behavior
+        run: cargo test --lib --no-default-features --features tokio,openssl,serde high::tokio::launch_tests
+      - name: Compare full library suite with pinned baseline
+        shell: bash
+        run: |
+          git fetch --depth=1 origin a04b3085b2f4db5d3337f8d93da0adbbb3f5309f
+          git worktree add --detach "$RUNNER_TEMP/signage-baseline" a04b3085b2f4db5d3337f8d93da0adbbb3f5309f
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          cargo test --manifest-path "$RUNNER_TEMP/signage-baseline/Cargo.toml" --lib --no-default-features --features tokio,openssl,serde -- -Z unstable-options --format json > baseline-tests.json || true
+          cargo test --lib --no-default-features --features tokio,openssl,serde -- -Z unstable-options --format json > branch-tests.json || true
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          def failures(path):
+              events = [json.loads(line) for line in Path(path).read_text().splitlines() if line.startswith('{')]
+              assert any(e.get('type') == 'suite' and e.get('event') in ('ok', 'failed') for e in events), f'{path}: test suite did not finish (compile/runtime failure)'
+              return {e['name'] for e in events if e.get('type') == 'test' and e.get('event') == 'failed'}
+          baseline, branch = failures('baseline-tests.json'), failures('branch-tests.json')
+          print('Verified baseline failures:', sorted(baseline))
+          print('Branch failures:', sorted(branch))
+          assert not branch - baseline, f'New test failures: {sorted(branch - baseline)}'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: library-test-comparison
+          path: '*-tests.json'
