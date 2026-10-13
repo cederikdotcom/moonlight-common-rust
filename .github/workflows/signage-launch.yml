@@ -1,0 +1,16 @@
+name: Signage launch contract
+on:
+  push:
+    branches: [issue-770-launch-only]
+  pull_request:
+    paths: ['src/high/**', '.github/workflows/signage-launch.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --lib --no-default-features --features tokio,openssl,serde
